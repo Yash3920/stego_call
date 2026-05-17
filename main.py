@@ -2,6 +2,10 @@ import os
 import sys
 import time
 
+# Ensure Windows terminal supports UTF-8 for the box drawing characters
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def check_dependencies():
     missing = []
     for pkg in ['numpy', 'sounddevice', 'cryptography']:
@@ -24,9 +28,9 @@ SAMPLE_RATE = 48000
 CHUNK       = 4096
 MARKER      = [1,0,1,0,1,1,0,1,1,1,0,0,1,0,1,1,0,1,1,0]
 MARKER_LEN  = len(MARKER)
-FREQ_ONE    = 18000
-FREQ_ZERO   = 17000
-TONE_AMP    = 0.08
+FREQ_ONE    = 7000
+FREQ_ZERO   = 6000
+TONE_AMP    = 0.12
 TONE_DUR    = 0.05
 
 
