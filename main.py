@@ -28,9 +28,9 @@ SAMPLE_RATE = 48000
 CHUNK       = 4096
 MARKER      = [1,0,1,0,1,1,0,1,1,1,0,0,1,0,1,1,0,1,1,0]
 MARKER_LEN  = len(MARKER)
-FREQ_ONE    = 1600
-FREQ_ZERO   = 1200
-TONE_AMP    = 0.1
+FREQ_ONE    = 1200
+FREQ_ZERO   = 800
+TONE_AMP    = 0.8
 TONE_DUR    = 0.1
 
 SAMPLES_PER_BIT = int(SAMPLE_RATE * TONE_DUR)
@@ -70,27 +70,50 @@ def find_real_mic() -> int:
 
 
 # ── Audio helpers ─────────────────────────────────────────
-def generate_tone(freq, duration):
-    t = np.linspace(0, duration, int(SAMPLE_RATE * duration), endpoint=False)
-    return (np.sin(2 * np.pi * freq * t) * TONE_AMP).astype(np.float32)
-
 def encode_to_audio(message: str) -> np.ndarray:
     # Payload is: 1 second of CARRIER (FREQ_ONE), followed by a START BIT (FREQ_ZERO), then DATA, then STOP BIT (FREQ_ZERO)
     bits = to_bits(encrypt(message))
-    chunks = []
     
-    # Carrier wave (1.0 seconds of FREQ_ONE) to lock AGC and allow receiver to sync
-    chunks.append(generate_tone(FREQ_ONE, 1.0))
-    # Start bit (FREQ_ZERO) indicates data begins NOW
-    chunks.append(generate_tone(FREQ_ZERO, TONE_DUR))
+    # We must construct a continuous-phase signal (CPFSK) to prevent clicks
+    # that trigger WhatsApp's Echo Canceller.
+    total_bits = 10 + 1 + len(bits) + 1 # 10 carrier bits, 1 start, data, 1 stop
+    total_samples = int(total_bits * SAMPLES_PER_BIT)
     
+    t = np.arange(total_samples) / SAMPLE_RATE
+    
+    # Create an array of frequencies for each sample
+    freq_sequence = []
+    
+    # Carrier (10 bits of FREQ_ONE)
+    freq_sequence.extend([FREQ_ONE] * (10 * SAMPLES_PER_BIT))
+    # Start bit
+    freq_sequence.extend([FREQ_ZERO] * SAMPLES_PER_BIT)
+    # Data
     for bit in bits:
-        chunks.append(generate_tone(FREQ_ONE if bit == 1 else FREQ_ZERO, TONE_DUR))
+        freq_sequence.extend([FREQ_ONE if bit == 1 else FREQ_ZERO] * SAMPLES_PER_BIT)
+    # Stop bit
+    freq_sequence.extend([FREQ_ZERO] * SAMPLES_PER_BIT)
+    
+    freq_array = np.array(freq_sequence)
+    
+    # Integrate frequency to get continuous phase
+    phase = 2 * np.pi * np.cumsum(freq_array) / SAMPLE_RATE
+    
+    # Generate the smooth audio wave
+    audio = np.sin(phase) * TONE_AMP
+    
+    # Add a smooth fade-in and fade-out to prevent the start/end click
+    fade_len = int(SAMPLE_RATE * 0.05)
+    fade_in = np.linspace(0, 1, fade_len)
+    fade_out = np.linspace(1, 0, fade_len)
+    
+    if len(audio) > fade_len * 2:
+        audio[:fade_len] *= fade_in
+        audio[-fade_len:] *= fade_out
         
-    # Stop bit (FREQ_ZERO)
-    chunks.append(generate_tone(FREQ_ZERO, TONE_DUR))
-    chunks.append(np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32))
-    return np.concatenate(chunks)
+    # Add trailing silence
+    audio = np.concatenate([audio.astype(np.float32), np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)])
+    return audio
 
 def detect_bit(chunk: np.ndarray) -> int:
     """Returns 1, 0, or -1 if noise/silence"""
