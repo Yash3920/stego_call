@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 
-const SERVER_URL = 'http://localhost:3000';
+const SERVER_URL = window.location.origin;
 let socket = null;
 
 export const initSignaling = (roomId, onUserJoined, onOffer, onAnswer, onIceCandidate, onUserLeft) => {

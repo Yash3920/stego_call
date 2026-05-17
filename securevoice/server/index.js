@@ -6,6 +6,10 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
+// Serve static frontend
+const path = require('path');
+app.use(express.static(path.join(__dirname, '../client/dist')));
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {

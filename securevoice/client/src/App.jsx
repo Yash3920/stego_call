@@ -162,7 +162,7 @@ function App() {
               </div>
             </div>
             
-            <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }}></audio>
+            <audio ref={remoteAudioRef} autoPlay playsInline muted style={{ display: 'none' }}></audio>
           </div>
         )}
       </div>

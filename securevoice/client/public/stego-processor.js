@@ -3,10 +3,19 @@ class StegoProcessor extends AudioWorkletProcessor {
     super();
     this.encodeBits = null;
     this.encodeIdx = 0;
-    this.encodeRepeats = 64; // Redundancy across 64 samples per bit
-    this.currentRepeat = 0;
+    
+    // FSK Settings
+    this.SAMPLE_RATE = 48000;
+    this.SAMPLES_PER_BIT = 1024; // ~46 baud (Slower but much more accurate)
+    this.FREQ_1 = 3000; // 3kHz for 1
+    this.FREQ_0 = 2000; // 2kHz for 0
+    this.currentEncodeSample = 0;
+    this.phase = 0;
 
-    this.SYNC_PATTERN = [1,0,1,0,1,0,1,0,1,1,1,1,0,0,0,0]; // 16 bits
+    this.SYNC_PATTERN = [1,0,1,0,1,0,1,0,1,1,1,1,0,0,0,0]; 
+    
+    this.decodeBuffer = new Float32Array(this.SAMPLES_PER_BIT);
+    this.decodeIdx = 0;
     this.bitHistory = [];
     this.lastDecodedText = "";
     
@@ -15,7 +24,8 @@ class StegoProcessor extends AudioWorkletProcessor {
         const text = e.data.payload;
         this.encodeBits = this.textToBits(text);
         this.encodeIdx = 0;
-        this.currentRepeat = 0;
+        this.currentEncodeSample = 0;
+        this.phase = 0;
       }
     };
   }
@@ -33,6 +43,23 @@ class StegoProcessor extends AudioWorkletProcessor {
     return bits;
   }
 
+  goertzel(samples, targetFreq) {
+    const k = Math.round(targetFreq * samples.length / this.SAMPLE_RATE);
+    const omega = (2 * Math.PI * k) / samples.length;
+    const cosine = Math.cos(omega);
+    const coeff = 2 * cosine;
+
+    let q0 = 0, q1 = 0, q2 = 0;
+    for (let i = 0; i < samples.length; i++) {
+      q0 = coeff * q1 - q2 + samples[i];
+      q2 = q1;
+      q1 = q0;
+    }
+    const real = q1 - q2 * cosine;
+    const imag = q2 * Math.sin(omega);
+    return Math.sqrt(real * real + imag * imag);
+  }
+
   process(inputs, outputs) {
     const input = inputs[0];
     const output = outputs[0];
@@ -41,63 +68,59 @@ class StegoProcessor extends AudioWorkletProcessor {
 
     const channelIn = input[0];
     const channelOut = output[0];
+    const VOL_BOOST = 1.0; // Removed boost to prevent clipping which ruins the FSK signal
 
-    // Read incoming bits (for decoding)
-    // We expect the local mic to have clean audio, but the remote track will have stego.
-    // If this processor is attached to the remote track, it decodes.
-    // We average the bit over multiple samples (basic low-pass).
-    let bitSum = 0;
+    // --- DECODER ---
     for (let i = 0; i < channelIn.length; i++) {
-      let sample = channelIn[i];
-      let int16 = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
-      
-      // Use 4th bit (index 3) to survive basic compression
-      let bit = (Math.abs(int16) >> 3) & 1;
-      bitSum += bit;
-    }
-    
-    // Since process() runs on 128 samples, and our redundancy is 64, 
-    // we just take the majority bit of the first 64 and second 64 samples.
-    for (let chunk = 0; chunk < 2; chunk++) {
-      let cSum = 0;
-      for (let i = 0; i < 64; i++) {
-        let int16 = Math.max(-32768, Math.min(32767, Math.round(channelIn[chunk*64 + i] * 32767)));
-        cSum += (Math.abs(int16) >> 3) & 1;
+      this.decodeBuffer[this.decodeIdx++] = channelIn[i];
+      if (this.decodeIdx >= this.SAMPLES_PER_BIT) {
+        // We have a full block, detect frequency
+        const energy1 = this.goertzel(this.decodeBuffer, this.FREQ_1);
+        const energy0 = this.goertzel(this.decodeBuffer, this.FREQ_0);
+        
+        // Threshold to ignore silence
+        if (energy1 > 2.0 || energy0 > 2.0) {
+            this.bitHistory.push(energy1 > energy0 ? 1 : 0);
+        } else {
+            // Push something arbitrary or just 0 so history slides, 
+            // but we don't want to overflow.
+            this.bitHistory.push(0);
+        }
+        
+        if (this.bitHistory.length > 2000) {
+          this.attemptDecode();
+          this.bitHistory = this.bitHistory.slice(-1000);
+        }
+        
+        this.decodeIdx = 0; // Reset buffer
       }
-      this.bitHistory.push(cSum > 32 ? 1 : 0);
-    }
-    
-    // Periodically attempt decode and clean history
-    if (this.bitHistory.length > 2000) {
-      this.attemptDecode();
-      // Keep last 1000 bits for overlap
-      this.bitHistory = this.bitHistory.slice(-1000);
     }
 
-    // Embed outgoing bits (for encoding)
+    // --- ENCODER ---
     for (let i = 0; i < channelIn.length; i++) {
-      let sample = channelIn[i];
+      let sample = channelIn[i] * VOL_BOOST; 
       
       if (this.encodeBits && this.encodeIdx < this.encodeBits.length) {
         let bit = this.encodeBits[this.encodeIdx];
-        let int16 = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+        let freq = bit === 1 ? this.FREQ_1 : this.FREQ_0;
         
-        let sign = Math.sign(int16) || 1;
-        let absVal = Math.abs(int16);
-        absVal = absVal & ~(1 << 3);
-        if (bit === 1) {
-          absVal = absVal | (1 << 3);
-        }
+        this.phase += (2 * Math.PI * freq) / this.SAMPLE_RATE;
+        if (this.phase > 2 * Math.PI) this.phase -= 2 * Math.PI;
         
-        channelOut[i] = (absVal * sign) / 32768.0;
+        // Add a 5% amplitude sine wave (much quieter, less weird noise)
+        let tone = Math.sin(this.phase) * 0.05; 
         
-        this.currentRepeat++;
-        if (this.currentRepeat >= this.encodeRepeats) {
-          this.currentRepeat = 0;
+        channelOut[i] = Math.max(-1.0, Math.min(1.0, sample + tone));
+        
+        this.currentEncodeSample++;
+        if (this.currentEncodeSample >= this.SAMPLES_PER_BIT) {
+          this.currentEncodeSample = 0;
           this.encodeIdx++;
+          // Optional: Phase reset for cleaner FSK? 
+          // CPFSK (Continuous Phase) is better, so we don't reset phase.
         }
       } else {
-        channelOut[i] = sample;
+        channelOut[i] = Math.max(-1.0, Math.min(1.0, sample));
       }
     }
 
@@ -112,16 +135,14 @@ class StegoProcessor extends AudioWorkletProcessor {
           match = false; break;
         }
       }
+      
       if(match) {
         let lenIdx = i + 16;
         if (lenIdx + 16 > this.bitHistory.length) break;
         let len = 0;
         for(let j=0; j<16; j++) len = (len << 1) | this.bitHistory[lenIdx+j];
         
-        // Safety bounds
-        if (len <= 0 || len > 200) {
-            continue; 
-        }
+        if (len <= 0 || len > 200) continue; 
 
         let textIdx = lenIdx + 16;
         if (textIdx + len*8 > this.bitHistory.length) break;
