@@ -28,10 +28,10 @@ SAMPLE_RATE = 48000
 CHUNK       = 4096
 MARKER      = [1,0,1,0,1,1,0,1,1,1,0,0,1,0,1,1,0,1,1,0]
 MARKER_LEN  = len(MARKER)
-FREQ_ONE    = 7000
-FREQ_ZERO   = 6000
-TONE_AMP    = 0.12
-TONE_DUR    = 0.05
+FREQ_ONE    = 4500
+FREQ_ZERO   = 3500
+TONE_AMP    = 0.5
+TONE_DUR    = 0.1
 
 
 # ── Auto-detect VB-Cable devices ─────────────────────────
