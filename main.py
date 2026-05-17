@@ -370,6 +370,121 @@ def run_receiver():
     print(f"\nSession ended. Messages received: {count[0]}")
 
 
+# ── WAV FILE MODE ─────────────────────────────────────────
+def run_encode_wav():
+    print("\n" + "=" * 50)
+    print("   ENCODE TO WAV FILE")
+    print("=" * 50)
+    msg = input("\nEnter your secret message: ")
+    if not msg:
+        return
+        
+    print("\nPreparing encrypted audio...")
+    audio = encode_to_audio(msg)
+    # Convert float32 [-1.0, 1.0] to int16
+    audio_int16 = np.int16(audio * 32767)
+    
+    filename = "secret.wav"
+    import wave
+    with wave.open(filename, 'wb') as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(SAMPLE_RATE)
+        f.writeframes(audio_int16.tobytes())
+        
+    print(f"\nDone! Message hidden in '{filename}'")
+    print("You can now send this file to your friend.")
+    input("\nPress Enter to return to menu...")
+
+def run_decode_wav():
+    print("\n" + "=" * 50)
+    print("   DECODE FROM WAV FILE")
+    print("=" * 50)
+    
+    filename = input("\nEnter filename (default: secret.wav): ").strip()
+    if not filename:
+        filename = "secret.wav"
+        
+    if not os.path.exists(filename):
+        print(f"\nFile '{filename}' not found!")
+        input("Press Enter to return...")
+        return
+        
+    import wave
+    try:
+        with wave.open(filename, 'rb') as f:
+            if f.getnchannels() != 1 or f.getsampwidth() != 2 or f.getframerate() != SAMPLE_RATE:
+                print("\nWarning: Audio format doesn't match exactly. Decoding may fail.")
+                
+            frames = f.readframes(f.getnframes())
+            audio_int16 = np.frombuffer(frames, dtype=np.int16)
+            audio = audio_int16.astype(np.float32) / 32768.0
+            
+    except Exception as e:
+        print(f"\nError reading WAV: {e}")
+        input("Press Enter to return...")
+        return
+
+    print("\nDecoding message...")
+    
+    buf = audio.tolist()
+    data_bits = []
+    
+    STATE_WAIT_CARRIER = 0
+    STATE_WAIT_START   = 1
+    STATE_READ_DATA    = 2
+    state = STATE_WAIT_CARRIER
+    
+    carrier_count = 0
+    pos = 0
+    
+    while pos < len(buf) - SAMPLES_PER_BIT:
+        if state == STATE_WAIT_CARRIER:
+            step = SAMPLES_PER_BIT // 4
+            bit = detect_bit(buf[pos:pos+SAMPLES_PER_BIT])
+            if bit == 1:
+                carrier_count += 1
+                pos += step
+            else:
+                if carrier_count > 10:
+                    state = STATE_WAIT_START
+                    pos += SAMPLES_PER_BIT
+                else:
+                    carrier_count = 0
+                    pos += step
+                    
+        elif state == STATE_WAIT_START:
+            bit = detect_bit(buf[pos:pos+SAMPLES_PER_BIT])
+            if bit == 0:
+                state = STATE_READ_DATA
+                pos += SAMPLES_PER_BIT
+            else:
+                state = STATE_WAIT_CARRIER
+                carrier_count = 0
+                
+        elif state == STATE_READ_DATA:
+            bit = detect_bit(buf[pos:pos+SAMPLES_PER_BIT])
+            if bit is not None:
+                data_bits.append(bit)
+            
+            if len(data_bits) >= MARKER_LEN and data_bits[-MARKER_LEN:] == MARKER:
+                payload = data_bits[:-MARKER_LEN]
+                if len(payload) >= 13:
+                    result = decrypt(payload)
+                    if result:
+                        print(f"\n{'='*50}")
+                        print(f"  SECRET MESSAGE:")
+                        print(f"  {result}")
+                        print(f"{'='*50}\n")
+                        input("Press Enter to return to menu...")
+                        return
+                        
+            pos += SAMPLES_PER_BIT
+            
+    print("\nNo valid message found in the file.")
+    input("Press Enter to return to menu...")
+
+
 # ── CHECK DEVICES ─────────────────────────────────────────
 def run_check_devices():
     print("\n" + "=" * 50)
@@ -438,9 +553,11 @@ def main():
     print("  2  RECEIVER - Extract hidden messages")
     print("  3  CHECK    - Verify VB-Cable devices")
     print("  4  EXIT")
-    print("  5  DIAGNOSTICS - Live Audio Volume Meter\n")
+    print("  5  DIAGNOSTICS - Live Audio Volume Meter")
+    print("  6  WAV ENCODE  - Hide a message in a WAV file")
+    print("  7  WAV DECODE  - Extract message from a WAV file\n")
 
-    choice = input("  Choose (1/2/3/4/5): ").strip()
+    choice = input("  Choose (1/2/3/4/5/6/7): ").strip()
 
     if choice == '1':
         run_sender()
@@ -454,6 +571,12 @@ def main():
         sys.exit(0)
     elif choice == '5':
         run_diagnostics()
+        main()
+    elif choice == '6':
+        run_encode_wav()
+        main()
+    elif choice == '7':
+        run_decode_wav()
         main()
     else:
         print("\nInvalid choice.")
