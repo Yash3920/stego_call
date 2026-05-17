@@ -209,6 +209,47 @@ def run_sender():
         print(f"\nError: {e}")
 
     print("\nSender done.")
+    print("\nSender done.")
+
+
+# ── DEVICE SELECTION ──────────────────────────────────────
+def prompt_select_input_device():
+    print("\nSelect the audio device to listen to:")
+    devices = sd.query_devices()
+    valid_devices = []
+    
+    for i, dev in enumerate(devices):
+        if dev['max_input_channels'] > 0 and dev['hostapi'] == 2:
+            valid_devices.append(i)
+            name = dev['name']
+            if 'CABLE Output' in name:
+                name += " <-- (Recommended for VB-Cable)"
+            elif 'Microphone' in name and 'CABLE' not in name:
+                name += " <-- (Choose this for Air-Gap bypass!)"
+            print(f"  [{i}] {name}")
+            
+    if not valid_devices:
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                valid_devices.append(i)
+                print(f"  [{i}] {dev['name']}")
+                
+    cable_out = find_cable_output()
+    default_msg = f" (Press Enter for Default: {cable_out})" if cable_out is not None else ""
+    
+    choice = input(f"\nEnter device ID{default_msg}: ").strip()
+    if not choice:
+        return cable_out
+    try:
+        dev_id = int(choice)
+        if dev_id in valid_devices or devices[dev_id]['max_input_channels'] > 0:
+            return dev_id
+        else:
+            print("Invalid device. Using default.")
+            return cable_out
+    except:
+        print("Invalid choice, using default.")
+        return cable_out
 
 
 # ── RECEIVER ──────────────────────────────────────────────
@@ -217,18 +258,14 @@ def run_receiver():
     print("   RECEIVER MODE")
     print("=" * 50)
 
-    cable_out = find_cable_output()
+    listen_dev = prompt_select_input_device()
 
-    if cable_out is None:
-        print("\nVB-Cable not found! Make sure it is installed.")
+    if listen_dev is None:
+        print("\nNo valid input device found!")
+        input("Press Enter to return...")
         return
 
-    print(f"\nAuto-detected:")
-    print(f"  VB-Cable : {sd.query_devices(cable_out)['name']}")
-
-    print("\nIn Google Meet / WhatsApp:")
-    print("  Set Speaker -> CABLE Input (VB-Audio Virtual Cable)")
-    input("\nPress Enter when call is active and speaker is set...")
+    print(f"\nListening on: {sd.query_devices(listen_dev)['name']}")
 
     print("\nListening for hidden messages...")
     print("Press Ctrl+C to stop\n")
@@ -359,7 +396,7 @@ def run_receiver():
 
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK, channels=1,
-                            dtype='float32', device=cable_out, callback=callback):
+                            dtype='float32', device=listen_dev, callback=callback):
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
@@ -511,16 +548,14 @@ def run_diagnostics():
     print("   AUDIO DIAGNOSTICS")
     print("=" * 50)
     
-    cable_out = find_cable_output()
-    if cable_out is None:
-        print("\nVB-Cable not found! Cannot run diagnostics.")
+    listen_dev = prompt_select_input_device()
+    if listen_dev is None:
+        print("\nNo valid input device found! Cannot run diagnostics.")
         input("Press Enter to return...")
         return
         
-    print("\nListening to WhatsApp Audio (CABLE Output)...")
-    print("If the bar stays at 0%, WhatsApp is NOT routing audio to the script!")
-    print("Fix: Go to Windows Settings > System > Sound > Volume Mixer.")
-    print("Ensure WhatsApp's 'Output device' is set to 'CABLE Input'.")
+    print(f"\nListening to: {sd.query_devices(listen_dev)['name']}")
+    print("If the bar stays at 0%, the device is not receiving audio.")
     print("Press Ctrl+C to stop.\n")
     
     def callback(indata, frames, t, status):
@@ -532,7 +567,7 @@ def run_diagnostics():
 
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK, channels=1,
-                            dtype='float32', device=cable_out, callback=callback):
+                            dtype='float32', device=listen_dev, callback=callback):
             while True:
                 time.sleep(0.1)
     except KeyboardInterrupt:
