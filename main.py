@@ -40,8 +40,13 @@ def find_cable_input() -> int:
     """Find CABLE Input device ID automatically."""
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
-        if 'cable input' in name and 'vb-audio' in name and d['max_output_channels'] > 0:
+        if 'cable input' in name and 'vb-audio' in name and d['max_output_channels'] > 0 and d['hostapi'] == 2:
             return i
+    for i, d in enumerate(sd.query_devices()):
+        name = d['name'].lower()
+        if 'cable input' in name and d['max_output_channels'] > 0 and d['hostapi'] == 2:
+            return i
+    # Fallback to MME
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
         if 'cable input' in name and d['max_output_channels'] > 0:
@@ -52,8 +57,13 @@ def find_cable_output() -> int:
     """Find CABLE Output device ID automatically."""
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
-        if 'cable output' in name and 'vb-audio' in name and d['max_input_channels'] > 0:
+        if 'cable output' in name and 'vb-audio' in name and d['max_input_channels'] > 0 and d['hostapi'] == 2:
             return i
+    for i, d in enumerate(sd.query_devices()):
+        name = d['name'].lower()
+        if 'cable output' in name and d['max_input_channels'] > 0 and d['hostapi'] == 2:
+            return i
+    # Fallback to MME
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
         if 'cable output' in name and d['max_input_channels'] > 0:
@@ -62,6 +72,11 @@ def find_cable_output() -> int:
 
 def find_real_mic() -> int:
     """Find real microphone (not VB-Cable)."""
+    for i, d in enumerate(sd.query_devices()):
+        name = d['name'].lower()
+        if d['max_input_channels'] > 0 and 'cable' not in name and 'vb-audio' not in name and 'mapper' not in name and 'primary' not in name and d['hostapi'] == 2:
+            return i
+    # Fallback to MME
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
         if d['max_input_channels'] > 0 and 'cable' not in name and 'vb-audio' not in name and 'mapper' not in name and 'primary' not in name:
