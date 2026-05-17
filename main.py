@@ -112,7 +112,6 @@ def run_sender():
 
     print("\nIn Google Meet / WhatsApp:")
     print("  Set Microphone -> CABLE Output (VB-Audio Virtual Cable)")
-    input("\nPress Enter when call is active and mic is set...")
 
     message = input("\nEnter your secret message: ").strip()
     if not message:
@@ -125,7 +124,9 @@ def run_sender():
     pos      = [0]
     done     = [False]
 
-    print(f"Sending {len(MARKER + to_bits(encrypt(message)))} bits — {total/SAMPLE_RATE:.1f}s of audio\n")
+    print(f"Prepared {len(MARKER + to_bits(encrypt(message)))} bits — {total/SAMPLE_RATE:.1f}s of audio")
+    input("\nPress Enter when call is active and you are ready to TRANSMIT...")
+    print("Sending...\n")
 
     def callback(indata, outdata, frames, t, status):
         mic = indata[:, 0].copy()
