@@ -375,6 +375,41 @@ def run_check_devices():
     input()
 
 
+# ── DIAGNOSTICS ───────────────────────────────────────────
+def run_diagnostics():
+    print("\n" + "=" * 50)
+    print("   AUDIO DIAGNOSTICS")
+    print("=" * 50)
+    
+    cable_out = find_cable_output()
+    if cable_out is None:
+        print("\nVB-Cable not found! Cannot run diagnostics.")
+        input("Press Enter to return...")
+        return
+        
+    print("\nListening to WhatsApp Audio (CABLE Output)...")
+    print("If the bar stays at 0%, WhatsApp is NOT routing audio to the script!")
+    print("Fix: Go to Windows Settings > System > Sound > Volume Mixer.")
+    print("Ensure WhatsApp's 'Output device' is set to 'CABLE Input'.")
+    print("Press Ctrl+C to stop.\n")
+    
+    def callback(indata, frames, t, status):
+        rms = np.sqrt(np.mean(indata**2))
+        vol = min(100, int(rms * 500)) # Scale for visibility
+        bars = int(vol / 5)
+        bar_str = "█" * bars + "░" * (20 - bars)
+        print(f"\r  Audio Level: [{bar_str}] {vol:3}%   ", end="", flush=True)
+
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK, channels=1,
+                            dtype='float32', device=cable_out, callback=callback):
+            while True:
+                time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\n\nDiagnostics stopped.")
+        time.sleep(0.5)
+
+
 # ── MAIN MENU ─────────────────────────────────────────────
 def main():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -387,9 +422,10 @@ def main():
     print("  1  SENDER   - Hide a message in call audio")
     print("  2  RECEIVER - Extract hidden messages")
     print("  3  CHECK    - Verify VB-Cable devices")
-    print("  4  EXIT\n")
+    print("  4  EXIT")
+    print("  5  DIAGNOSTICS - Live Audio Volume Meter\n")
 
-    choice = input("  Choose (1/2/3/4): ").strip()
+    choice = input("  Choose (1/2/3/4/5): ").strip()
 
     if choice == '1':
         run_sender()
@@ -401,6 +437,9 @@ def main():
     elif choice == '4':
         print("\nGoodbye!\n")
         sys.exit(0)
+    elif choice == '5':
+        run_diagnostics()
+        main()
     else:
         print("\nInvalid choice.")
         input("Press Enter to try again...")
