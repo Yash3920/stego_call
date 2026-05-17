@@ -104,9 +104,8 @@ def detect_bit(chunk: np.ndarray) -> int:
     e1 = energy(FREQ_ONE)
     e0 = energy(FREQ_ZERO)
     
-    # Dynamic thresholding based on local energy to reject silence/voice
-    total_energy = np.sum(fft)
-    if total_energy == 0 or max(e1, e0) < total_energy * 0.15:
+    # Use a fixed energy threshold to ignore background noise
+    if max(e1, e0) < 20.0:
         return -1 # Not a valid bit (probably silence or normal voice)
         
     return 1 if e1 > e0 else 0
@@ -267,9 +266,24 @@ def run_receiver():
                 bit = detect_bit(chunk)
                 
                 if bit == -1:
+                    # Signal ended, try to decode one last time
+                    try:
+                        payload = from_bits(data_bits)
+                        if len(payload) >= 13:
+                            result = decrypt(payload)
+                            if result:
+                                count[0] += 1
+                                print(f"\n{'='*50}")
+                                print(f"  SECRET MESSAGE #{count[0]}:")
+                                print(f"  {result}")
+                                print(f"{'='*50}\n")
+                    except Exception:
+                        pass
+                        
                     print("\nLost signal. Resetting...")
                     state[0] = STATE_WAIT_CARRIER
                     carrier_count[0] = 0
+                    data_bits.clear()
                     del buf[:next_sample_pos[0]]
                     break
                     
