@@ -28,11 +28,12 @@ SAMPLE_RATE = 48000
 CHUNK       = 4096
 MARKER      = [1,0,1,0,1,1,0,1,1,1,0,0,1,0,1,1,0,1,1,0]
 MARKER_LEN  = len(MARKER)
-FREQ_ONE    = 4500
-FREQ_ZERO   = 3500
-TONE_AMP    = 0.5
+FREQ_ONE    = 1600
+FREQ_ZERO   = 1200
+TONE_AMP    = 0.1
 TONE_DUR    = 0.1
 
+SAMPLES_PER_BIT = int(SAMPLE_RATE * TONE_DUR)
 
 # ── Auto-detect VB-Cable devices ─────────────────────────
 def find_cable_input() -> int:
@@ -41,7 +42,6 @@ def find_cable_input() -> int:
         name = d['name'].lower()
         if 'cable input' in name and 'vb-audio' in name and d['max_output_channels'] > 0:
             return i
-    # fallback — any cable input
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
         if 'cable input' in name and d['max_output_channels'] > 0:
@@ -54,7 +54,6 @@ def find_cable_output() -> int:
         name = d['name'].lower()
         if 'cable output' in name and 'vb-audio' in name and d['max_input_channels'] > 0:
             return i
-    # fallback
     for i, d in enumerate(sd.query_devices()):
         name = d['name'].lower()
         if 'cable output' in name and d['max_input_channels'] > 0:
@@ -76,20 +75,41 @@ def generate_tone(freq, duration):
     return (np.sin(2 * np.pi * freq * t) * TONE_AMP).astype(np.float32)
 
 def encode_to_audio(message: str) -> np.ndarray:
-    bits = MARKER + to_bits(encrypt(message))
-    chunks = [np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32)]
+    # Payload is: 1 second of CARRIER (FREQ_ONE), followed by a START BIT (FREQ_ZERO), then DATA, then STOP BIT (FREQ_ZERO)
+    bits = to_bits(encrypt(message))
+    chunks = []
+    
+    # Carrier wave (1.0 seconds of FREQ_ONE) to lock AGC and allow receiver to sync
+    chunks.append(generate_tone(FREQ_ONE, 1.0))
+    # Start bit (FREQ_ZERO) indicates data begins NOW
+    chunks.append(generate_tone(FREQ_ZERO, TONE_DUR))
+    
     for bit in bits:
         chunks.append(generate_tone(FREQ_ONE if bit == 1 else FREQ_ZERO, TONE_DUR))
-    chunks.append(np.zeros(int(SAMPLE_RATE * 0.1), dtype=np.float32))
+        
+    # Stop bit (FREQ_ZERO)
+    chunks.append(generate_tone(FREQ_ZERO, TONE_DUR))
+    chunks.append(np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32))
     return np.concatenate(chunks)
 
 def detect_bit(chunk: np.ndarray) -> int:
+    """Returns 1, 0, or -1 if noise/silence"""
     fft   = np.abs(np.fft.rfft(chunk))
     freqs = np.fft.rfftfreq(len(chunk), 1 / SAMPLE_RATE)
+    
     def energy(f):
-        mask = (freqs >= f - 300) & (freqs <= f + 300)
+        mask = (freqs >= f - 150) & (freqs <= f + 150)
         return np.sum(fft[mask])
-    return 1 if energy(FREQ_ONE) > energy(FREQ_ZERO) else 0
+        
+    e1 = energy(FREQ_ONE)
+    e0 = energy(FREQ_ZERO)
+    
+    # Dynamic thresholding based on local energy to reject silence/voice
+    total_energy = np.sum(fft)
+    if total_energy == 0 or max(e1, e0) < total_energy * 0.15:
+        return -1 # Not a valid bit (probably silence or normal voice)
+        
+    return 1 if e1 > e0 else 0
 
 
 # ── SENDER ────────────────────────────────────────────────
@@ -98,7 +118,6 @@ def run_sender():
     print("   SENDER MODE")
     print("=" * 50)
 
-    # Auto-detect devices
     mic_id    = find_real_mic()
     cable_in  = find_cable_input()
 
@@ -124,7 +143,7 @@ def run_sender():
     pos      = [0]
     done     = [False]
 
-    print(f"Prepared {len(MARKER + to_bits(encrypt(message)))} bits — {total/SAMPLE_RATE:.1f}s of audio")
+    print(f"Prepared {len(to_bits(encrypt(message)))} bits — {total/SAMPLE_RATE:.1f}s of audio")
     input("\nPress Enter when call is active and you are ready to TRANSMIT...")
     print("Sending...\n")
 
@@ -148,7 +167,7 @@ def run_sender():
     try:
         with sd.Stream(samplerate=SAMPLE_RATE, blocksize=CHUNK, channels=1,
                        dtype='float32', device=(mic_id, cable_in), callback=callback):
-            sd.sleep(int((total / SAMPLE_RATE + 5) * 1000))
+            sd.sleep(int((total / SAMPLE_RATE + 2) * 1000))
     except Exception as e:
         print(f"\nError: {e}")
 
@@ -177,13 +196,19 @@ def run_receiver():
     print("\nListening for hidden messages...")
     print("Press Ctrl+C to stop\n")
 
-    samples_per_bit = int(SAMPLE_RATE * TONE_DUR)
     buf          = []
-    marker_bits  = []
     data_bits    = []
-    found        = [False]
     count        = [0]
     last_hb      = [time.time()]
+    
+    # State Machine
+    STATE_WAIT_CARRIER = 0
+    STATE_WAIT_START   = 1
+    STATE_READ_DATA    = 2
+    state = [STATE_WAIT_CARRIER]
+    
+    carrier_count = [0]
+    next_sample_pos = [0] # Exact sample offset to read next bit
 
     def callback(indata, frames, t, status):
         buf.extend(indata[:, 0].tolist())
@@ -192,21 +217,66 @@ def run_receiver():
             print("  ... listening ...", flush=True)
             last_hb[0] = time.time()
 
-        while len(buf) >= samples_per_bit:
-            chunk = np.array(buf[:samples_per_bit], dtype=np.float32)
-            del buf[:samples_per_bit]
-            bit = detect_bit(chunk)
-
-            if not found[0]:
-                marker_bits.append(bit)
-                if len(marker_bits) > MARKER_LEN * 2:
-                    del marker_bits[0]
-                if len(marker_bits) >= MARKER_LEN and marker_bits[-MARKER_LEN:] == MARKER:
-                    found[0] = True
+        # Sliding window processing
+        while True:
+            if state[0] == STATE_WAIT_CARRIER:
+                # Need at least one bit duration to analyze
+                if len(buf) < SAMPLES_PER_BIT:
+                    break
+                
+                # Analyze sliding window at 1/4 bit increments for fast lock
+                step = SAMPLES_PER_BIT // 4
+                chunk = np.array(buf[:SAMPLES_PER_BIT], dtype=np.float32)
+                bit = detect_bit(chunk)
+                
+                if bit == 1:
+                    carrier_count[0] += 1
+                    if carrier_count[0] > 6: # Saw ~0.6s of solid carrier
+                        state[0] = STATE_WAIT_START
+                        print("\nCarrier detected! Waiting for start bit...", flush=True)
+                else:
+                    carrier_count[0] = 0
+                    
+                del buf[:step]
+                
+            elif state[0] == STATE_WAIT_START:
+                if len(buf) < SAMPLES_PER_BIT:
+                    break
+                    
+                step = SAMPLES_PER_BIT // 4
+                chunk = np.array(buf[:SAMPLES_PER_BIT], dtype=np.float32)
+                bit = detect_bit(chunk)
+                
+                if bit == 0:
+                    print("Start bit locked! Receiving data...", flush=True)
+                    state[0] = STATE_READ_DATA
                     data_bits.clear()
-                    print("\nTransmission detected! Collecting...", flush=True)
-            else:
+                    # Align EXACTLY to the center of the next bit
+                    next_sample_pos[0] = int(SAMPLES_PER_BIT * 1.5)
+                    # Don't delete buffer, just shift logically
+                    break
+                else:
+                    del buf[:step]
+
+            elif state[0] == STATE_READ_DATA:
+                if len(buf) < next_sample_pos[0] + SAMPLES_PER_BIT:
+                    break
+                    
+                # Read exactly at the synchronized sample position
+                chunk = np.array(buf[next_sample_pos[0]:next_sample_pos[0]+SAMPLES_PER_BIT], dtype=np.float32)
+                bit = detect_bit(chunk)
+                
+                if bit == -1:
+                    print("\nLost signal. Resetting...")
+                    state[0] = STATE_WAIT_CARRIER
+                    carrier_count[0] = 0
+                    del buf[:next_sample_pos[0]]
+                    break
+                    
                 data_bits.append(bit)
+                next_sample_pos[0] += SAMPLES_PER_BIT
+                
+                # Check for successful decryption every 80 bits (10 bytes)
                 if len(data_bits) % 80 == 0 and len(data_bits) >= 80:
                     try:
                         payload = from_bits(data_bits)
@@ -218,12 +288,22 @@ def run_receiver():
                                 print(f"  SECRET MESSAGE #{count[0]}:")
                                 print(f"  {result}")
                                 print(f"{'='*50}\n")
+                                state[0] = STATE_WAIT_CARRIER
+                                carrier_count[0] = 0
                                 data_bits.clear()
-                                marker_bits.clear()
-                                found[0] = False
+                                del buf[:next_sample_pos[0]]
                                 print("Listening for next message...\n", flush=True)
+                                break
                     except Exception:
                         pass
+                        
+                # Failsafe: if we read 4000 bits without success, we probably desynced
+                if len(data_bits) > 4000:
+                    print("\nData stream invalid. Resetting...")
+                    state[0] = STATE_WAIT_CARRIER
+                    carrier_count[0] = 0
+                    del buf[:next_sample_pos[0]]
+                    break
 
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, blocksize=CHUNK, channels=1,
